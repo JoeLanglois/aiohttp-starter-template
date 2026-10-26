@@ -7,6 +7,7 @@ on app["db"], config on app["config"].
 
 from aiohttp import web
 
+from .bus import Bus
 from .config import Config
 from .db import open_db
 from . import web as web_layer
@@ -18,6 +19,8 @@ def make_app(config: Config | None = None) -> web.Application:
     app = web.Application(middlewares=[origin_check, auth_middleware])
     app["config"] = config
     app["db"] = open_db(config.db_path)
+    app["bus"] = Bus()  # server-push topics (see bus.py, web.ui_events)
+    app["note_errors"] = {}  # per-user transient form errors, by user id
     app["dev_queues"] = set()  # SSE subscribers, used only in dev mode
     if config.dev:
         app.on_startup.append(web_layer.start_dev_watcher)

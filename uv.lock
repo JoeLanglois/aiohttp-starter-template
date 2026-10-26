@@ -289,6 +289,15 @@ wheels = [
 ]
 
 [[package]]
+name = "datastar-py"
+version = "1.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/85/8d1f9caacc6d6e60040deced44cb538ccdb2e105e77305108b68e7c2afc9/datastar_py-1.0.3.tar.gz", hash = "sha256:f25634140803da069f765f02de95e2be6ea6bf9ddd1c8955d8eee93c9aecc537", size = 32418, upload-time = "2026-09-27T03:35:04.176Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cf/ce/3dc775e6cef186eb4172f81ad56de05c292c94477d089a8718cc007b9599/datastar_py-1.0.3-py3-none-any.whl", hash = "sha256:38ce441fcd866249662e610d315857bde046e74c3b989a6993e31da88a0a5139", size = 22194, upload-time = "2026-09-27T03:35:03.29Z" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -526,6 +535,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "datastar-py" },
     { name = "pwdlib", extra = ["argon2"] },
     { name = "sqlite-utils" },
     { name = "tdom" },
@@ -542,6 +552,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.12" },
+    { name = "datastar-py", specifier = ">=1.0.3" },
     { name = "pwdlib", extras = ["argon2"], specifier = ">=0.2" },
     { name = "sqlite-utils", specifier = ">=4.0" },
     { name = "tdom", specifier = ">=0.1.20" },

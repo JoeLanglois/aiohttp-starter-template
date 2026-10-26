@@ -29,7 +29,11 @@ _dev_es.addEventListener("css", (e) => {{
 
 
 def _page(
-    title: str, user: dict | None, content: Template, dev: bool = False
+    title: str,
+    user: dict | None,
+    content: Template,
+    dev: bool = False,
+    live: bool = False,
 ) -> Template:
     if user is not None:
         nav = t"""<nav>Signed in as {user["username"]}
@@ -39,11 +43,20 @@ def _page(
     else:
         nav = t"""<nav><a href="/login">Log in</a></nav>"""
     hot_swap = _DEV_SNIPPET if dev else t""
+    # `live` pages open the push stream on load (Hyperlith-style): the
+    # server re-renders <main id="app"> and fat-morphs it on every state
+    # change. data-init lives on its own element, outside the morphed
+    # region (and as a whole interpolated element — tdom templates must
+    # keep their tags balanced within one literal).
+    init = (
+        t"""<div data-init="@get('/events')" hidden></div>""" if live else t""
+    )
     return t"""<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>{title}</title>
-<link rel="stylesheet" href="/static/app.css"></head>
-<body>{nav}<main>{content}</main>{hot_swap}</body>
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/datastar.js"></script></head>
+<body>{init}{nav}<main id="app">{content}</main>{hot_swap}</body>
 </html>"""
 
 
@@ -64,18 +77,47 @@ def login_page(error: str | None = None, dev: bool = False) -> Template:
 
 
 def _note_item(note: dict) -> Template:
-    return t"""<li><strong>{note["title"]}</strong> {note["body"]}
-    <form method="post" action="/notes/{note['id']}/delete">
+    # Each form works two ways: classic submit (POST + redirect), or —
+    # with JS on — Datastar intercepts it (data-on:submit + @post) and the
+    # server answers with SSE events that remove just this <li>.
+    return t"""<li id="note-{note["id"]}"><strong>{note["title"]}</strong> {note["body"]}
+    <form method="post" action="/notes/{note["id"]}/delete"
+          data-on:submit="@post('/notes/{note["id"]}/delete')">
         <button type="submit">Delete</button>
     </form></li>"""
 
 
-def home_page(user: dict, user_notes: list[dict], dev: bool = False) -> Template:
-    content = t"""<h1>Your notes</h1>
-<form method="post" action="/notes">
-    <input name="title" placeholder="Title" required>
-    <input name="body" placeholder="Body">
+def notes_list(user_notes: list[dict]) -> Template:
+    """The <ul> fragment the server re-patches after a Datastar add."""
+    return t"""<ul id="notes">{[_note_item(n) for n in user_notes]}</ul>"""
+
+
+def note_error(message: str | None) -> Template:
+    return t"""<p id="note-error" role="alert">{message or ""}</p>"""
+
+
+def home_content(user_notes: list[dict], error: str | None = None) -> Template:
+    """Everything inside <main> on the home page — the unit of re-render
+    for server push (see home_main). data-bind ties each input to a
+    signal of the same name, so Datastar sends them as JSON on @post;
+    without JS the same form posts classically."""
+    return t"""<h1>Your notes</h1>
+<form method="post" action="/notes" data-on:submit="@post('/notes')">
+    <input name="title" data-bind="title" placeholder="Title" required>
+    <input name="body" data-bind="body" placeholder="Body">
     <button type="submit">Add note</button>
 </form>
-<ul>{[_note_item(n) for n in user_notes]}</ul>"""
-    return _page("Your notes", user, content, dev=dev)
+{note_error(error)}
+{notes_list(user_notes)}"""
+
+
+def home_main(user_notes: list[dict], error: str | None = None) -> Template:
+    """The whole <main id="app">, re-rendered and fat-morphed into the
+    page on every push. Its root id is the patch target."""
+    return t"""<main id="app">{home_content(user_notes, error)}</main>"""
+
+
+def home_page(user: dict, user_notes: list[dict], dev: bool = False) -> Template:
+    return _page(
+        "Your notes", user, home_content(user_notes), dev=dev, live=True
+    )

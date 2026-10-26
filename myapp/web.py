@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from aiohttp import web
 from tdom import html as render
 
-from . import accounts, notes, views
+from . import accounts, datastar, notes, views
 
 COOKIE = "sid"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -139,18 +139,68 @@ async def logout(request):
     raise resp
 
 
+def _topic(user: dict) -> str:
+    return f"user:{user['id']}"
+
+
+def _render_home_main(request, user: dict) -> str:
+    """Current <main id="app"> for this user, as a string — the render
+    function the push stream fat-morphs. Reads fresh state every call."""
+    error = request.app["note_errors"].get(user["id"])
+    user_notes = notes.list_notes(request.app["db"], user["id"])
+    return render(views.home_main(user_notes, error))
+
+
+async def ui_events(request):
+    """The push stream (opened by data-init on live pages). Subscribes
+    this connection to the user's bus topic and fat-morphs <main> on
+    every change until the client disconnects — unsubscribing is the
+    stream generator's finally, via the adapter."""
+    user = require_user(request)
+    stream = datastar.render_stream(
+        request.app["bus"],
+        _topic(user),
+        lambda: _render_home_main(request, user),
+    )
+    return datastar.DatastarResponse(stream)
+
+
 async def add_note(request):
     user = require_user(request)
+    db = request.app["db"]
+    if datastar.is_datastar_request(request):
+        # CQRS, Hyperlith-style: mutate, publish, answer almost nothing.
+        # Open pages (this one included) re-render via the push stream.
+        # The one direct reply is patch_signals clearing the form
+        # inputs, since the morphed fragment can't reset typed values.
+        signals = await datastar.read_signals(request) or {}
+        try:
+            notes.create_note(
+                db, user["id"], signals.get("title", ""), signals.get("body", "")
+            )
+        except ValueError as exc:
+            # The error is UI state: stash it, let the re-render show it.
+            request.app["note_errors"][user["id"]] = str(exc)
+            request.app["bus"].publish(_topic(user))
+            return datastar.DatastarResponse()
+        request.app["note_errors"].pop(user["id"], None)
+        request.app["bus"].publish(_topic(user))
+        return datastar.DatastarResponse(
+            datastar.ServerSentEventGenerator.patch_signals(
+                {"title": "", "body": ""}
+            )
+        )
     form = await request.post()
     try:
         notes.create_note(
-            request.app["db"],
+            db,
             user["id"],
             form.get("title", ""),
             form.get("body", ""),
         )
     except ValueError as exc:
         return web.Response(text=str(exc), status=400)
+    request.app["bus"].publish(_topic(user))
     raise web.HTTPFound("/")
 
 
@@ -159,6 +209,9 @@ async def delete_note(request):
     notes.delete_note(
         request.app["db"], user["id"], int(request.match_info["id"])
     )
+    request.app["bus"].publish(_topic(user))
+    if datastar.is_datastar_request(request):
+        return datastar.DatastarResponse()  # 204 — the push does the rest
     raise web.HTTPFound("/")
 
 
@@ -250,6 +303,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/logout", logout)
     app.router.add_post("/notes", add_note)
     app.router.add_post("/notes/{id:\\d+}/delete", delete_note)
+    app.router.add_get("/events", ui_events)
     app.router.add_get("/static/{filename:.+}", static_file)
     if app["config"].dev:
         app.router.add_get("/__dev/events", dev_events)

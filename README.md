@@ -9,6 +9,9 @@ A small, boring, secure-by-default starting point for personal web apps:
   auto-escaped, composed as values)
 - **Username/password auth done properly** (Argon2id + server-side
   sessions), with a CLI instead of a public signup page
+- **Datastar included** (vendored client + the official Python SDK),
+  with an aiohttp adapter — the demo notes UI updates over SSE with no
+  page reload, and still works with JS off
 
 Python **3.14+** is required (tdom uses t-strings).
 
@@ -118,6 +121,54 @@ turns on three dev-only behaviors:
   reload, no server restart. Python changes still restart via the
   supervisor, as above.
 - The SSE endpoint and the snippet **don't exist outside dev mode**.
+
+## Datastar
+
+The client is vendored at `myapp/static/datastar.js` (v1.0.4, pinned —
+no CDN, works offline) and loaded as a module on every page. Server
+side uses the official Python SDK (`datastar-py`, v1.0.3) through
+`myapp/datastar.py`, an **aiohttp adapter written for this template**
+(the SDK ships Starlette/Quart/FastAPI/Django integrations, but not
+aiohttp). It mirrors theirs:
+
+- `DatastarResponse(events…)` — 0..N SDK events; empty → 204, otherwise
+  200 + SSE headers. Accepts a single event, a list, or an async
+  generator for open-ended streams.
+- `read_signals(request)` — signals dict (query param on GET, JSON body
+  otherwise), or None for non-Datastar requests.
+- `is_datastar_request(request)` and a `datastar_response` decorator.
+
+The notes demo shows the pattern: the add/delete forms carry
+`data-on:submit="@post(...)"` and `data-bind` inputs. With JS on,
+Datastar posts signals to the *same routes*; the handlers detect it.
+With JS off, the identical forms submit classically and get redirects.
+One route table, both worlds. For one-shot replies, handlers can also
+return SDK events directly in the action's response (the demo uses this
+only to clear the form inputs via `patch_signals`).
+
+### Server push: the Hyperlith model
+
+The demo's updates don't actually come from the action responses —
+they're pushed, Hyperlith-style:
+
+- Pages opt in with `data-init="@get('/events')"` (see `views._page`'s
+  `live` flag), opening a long-lived SSE stream per tab.
+- `myapp/bus.py` is a tiny in-process pub/sub: `subscribe(topic)`
+  returns a size-1 coalescing queue, `publish(topic)` nudges every
+  subscriber, `unsubscribe` cleans up. One topic per user here.
+- Actions are CQRS-pure: mutate via the context, `bus.publish(...)`,
+  answer 204 (validation errors become state the next render shows).
+- The stream is the adapter's `render_stream(bus, topic, render)`:
+  it yields `render()` — the *whole* `<main id="app">`, fat morph, no
+  server-side diffing — immediately and after every publish, skipping
+  renders that didn't change (string compare; the SHA-256 of the HTML
+  rides along as the SSE event id, as Hyperlith does).
+- When a client disconnects, the response closes the generator and
+  its `finally` unsubscribes: no leaked subscribers, ever. A 30 s
+  heartbeat comment keeps idle streams alive through proxies.
+
+Single process, state re-read from SQLite on every render — the whole
+thing is `bus.py` (~50 lines) plus one generator in the adapter.
 
 ## Auth, concretely
 
