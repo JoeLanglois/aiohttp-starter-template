@@ -18,12 +18,18 @@ Python **3.14+** is required (tdom uses t-strings).
 ## Quick start
 
 ```bash
-uv sync                                   # create .venv, install deps
-uv run python -m myapp.cli create-user alice
-uv run python -m myapp                    # http://127.0.0.1:8080
-uv run python -m myapp --dev              # same, + auto-reload on .py changes
-uv run pytest                             # context tests + HTTP smoke tests
+uv sync                        # create .venv, install deps + the app
+uv run myapp-admin create-user alice
+uv run myapp                   # http://127.0.0.1:8080
+uv run myapp --dev             # same, + auto-reload & dev extras
+uv run pytest                  # context tests + HTTP smoke tests
 ```
+
+The short commands are console entry points (`[project.scripts]` in
+`pyproject.toml`): `myapp` serves (with `--dev` dispatch), `myapp-admin`
+is the user CLI. With the venv activated (`source .venv/bin/activate`)
+they're just `myapp` and `myapp-admin`. `python -m myapp` still works
+too.
 
 Dev mode (`--dev`) supervises the server with
 [watchfiles](https://watchfiles.helpmanual.io/): any `.py` change under
