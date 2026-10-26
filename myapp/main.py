@@ -11,16 +11,19 @@ from .bus import Bus
 from .config import Config
 from .db import open_db
 from . import web as web_layer
-from .web import auth_middleware, origin_check, register_routes
+from .web import auth_middleware, origin_check, register_routes, security_headers
 
 
 def make_app(config: Config | None = None) -> web.Application:
     config = config or Config.from_env()
-    app = web.Application(middlewares=[origin_check, auth_middleware])
+    app = web.Application(
+        middlewares=[security_headers, origin_check, auth_middleware]
+    )
     app["config"] = config
     app["db"] = open_db(config.db_path)
     app["bus"] = Bus()  # server-push topics (see bus.py, web.ui_events)
     app["note_errors"] = {}  # per-user transient form errors, by user id
+    app["login_failures"] = {}  # rate limiter state (see web.py)
     app["dev_queues"] = set()  # SSE subscribers, used only in dev mode
     if config.dev:
         app.on_startup.append(web_layer.start_dev_watcher)

@@ -6,6 +6,7 @@ fourth step, that step probably belongs in a context.
 """
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -15,35 +16,78 @@ from tdom import html as render
 
 from . import accounts, datastar, notes, views
 
+# Auth events (login ok / failed / rate-limited) go to this logger —
+# the only audit trail a personal app needs. Passwords are never logged.
+log = logging.getLogger("myapp.auth")
+
 COOKIE = "sid"
 STATIC_DIR = Path(__file__).parent / "static"
 
+
+def _cookie_name(request) -> str:
+    """The session cookie's name. With Secure cookies on, use the
+    __Host- prefix: browsers then guarantee the cookie was set by this
+    exact host over HTTPS, with Path=/ and no Domain (all true of the
+    login handler), so no sibling subdomain can plant or shadow it."""
+    return "__Host-sid" if request.app["config"].secure_cookies else COOKIE
+
+
 # -- Login rate limiting (in-memory; plenty for a personal app) -----------
+#
+# Keyed by client IP + normalized username. Caveat: behind a reverse
+# proxy, request.remote is the proxy's address, so the bucket becomes
+# per-username globally — stricter, and one attacker can lock a name out
+# for everyone. That trade is acceptable at this scale; if it ever
+# isn't, key on a *trusted* X-Forwarded-For instead.
 
 _FAIL_WINDOW = 15 * 60  # seconds
 _FAIL_MAX = 5
-_failures: dict[str, list[float]] = {}
+_PRUNE_AT = 512  # sweep dead keys when the dict grows past this
+# The store itself lives on the app (app["login_failures"], see
+# main.make_app) — per-app state, not a module global, so two apps in
+# one process (tests!) never share a rate-limit bucket.
 
 
-def _rate_limited(key: str) -> bool:
+def _rate_limited(failures: dict, key: str) -> bool:
     now = time.monotonic()
-    recent = [t for t in _failures.get(key, []) if now - t < _FAIL_WINDOW]
-    _failures[key] = recent
+    recent = [t for t in failures.get(key, []) if now - t < _FAIL_WINDOW]
+    failures[key] = recent
     return len(recent) >= _FAIL_MAX
 
 
-def _record_failure(key: str) -> None:
-    _failures.setdefault(key, []).append(time.monotonic())
+def _prune_failures(failures: dict) -> None:
+    """Drop keys whose attempts have all aged out — otherwise the dict
+    grows by one entry per distinct (IP, username) anyone ever tries."""
+    now = time.monotonic()
+    dead = [
+        key
+        for key, stamps in failures.items()
+        if not stamps or now - stamps[-1] >= _FAIL_WINDOW
+    ]
+    for key in dead:
+        del failures[key]
+
+
+def _record_failure(failures: dict, key: str) -> None:
+    if len(failures) > _PRUNE_AT:
+        _prune_failures(failures)
+    failures.setdefault(key, []).append(time.monotonic())
 
 
 # -- Middleware -------------------------------------------------------------
 
 
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
 @web.middleware
 async def origin_check(request, handler):
-    """CSRF defence-in-depth next to SameSite=Lax: a POST whose Origin
-    header points at another site is not ours, reject it."""
-    if request.method == "POST":
+    """CSRF defence-in-depth next to SameSite=Lax: a state-changing
+    request whose Origin header points at another site is not ours,
+    reject it. Covers every unsafe method, not just POST — a future
+    PUT/DELETE route (Datastar has @put/@delete actions) must not be
+    able to slip past by choice of verb."""
+    if request.method in _UNSAFE_METHODS:
         origin = request.headers.get("Origin")
         if origin and urlparse(origin).netloc != request.host:
             raise web.HTTPForbidden(text="Bad origin")
@@ -52,9 +96,35 @@ async def origin_check(request, handler):
 
 @web.middleware
 async def auth_middleware(request, handler):
-    token = request.cookies.get(COOKIE)
+    token = request.cookies.get(_cookie_name(request))
     request["user"] = accounts.user_for_session(request.app["db"], token)
     return await handler(request)
+
+
+@web.middleware
+async def security_headers(request, handler):
+    """Baseline hardening headers on every response — including
+    redirects and errors, which our handlers raise as HTTPExceptions,
+    hence the try/except: an exception here IS the response."""
+    try:
+        resp = await handler(request)
+    except web.HTTPException as exc:
+        resp = exc
+    if not resp.prepared:  # a started stream's headers are already sent
+        script_src = "'self' 'unsafe-inline'" if request.app["config"].dev else "'self'"
+        # script-src: the Datastar client is a same-origin file, so
+        # 'self' suffices in prod. Dev needs 'unsafe-inline' for the
+        # inline CSS hot-swap snippet — dev only, never in prod.
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            f"script-src {script_src}; "
+            "frame-ancestors 'none'; base-uri 'none'; "
+            "form-action 'self'; object-src 'none'",
+        )
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+    return resp
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -95,8 +165,15 @@ async def login(request):
     form = await request.post()
     db, cfg = request.app["db"], request.app["config"]
     username = form.get("username", "")
-    key = f"{request.remote}:{username}"
-    if _rate_limited(key):
+    password = form.get("password", "")
+    # The rate-limit key uses the canonical username, so case variants
+    # ("Alice", "ALICE") share one bucket instead of multiplying it.
+    failures = request.app["login_failures"]
+    key = f"{request.remote}:{accounts.normalize_username(username)}"
+    if _rate_limited(failures, key):
+        log.warning(
+            "login rate-limited user=%s ip=%s", username, request.remote
+        )
         return html_response(
             views.login_page(
                 "Too many attempts. Try again later.", dev=cfg.dev
@@ -106,22 +183,26 @@ async def login(request):
     user = accounts.user_by_username(db, username)
     # Argon2 verify is ~100-250 ms of pure CPU: run it in a thread (never
     # block the event loop), against a dummy hash when the user doesn't
-    # exist, so failures are identical in message and timing.
+    # exist, so failures are identical in message and timing. An
+    # over-long password is simply wrong: fail it without spending
+    # Argon2 time on up to a megabyte of attacker input.
     pw_hash = user["pw_hash"] if user else accounts.DUMMY_HASH
-    ok = await asyncio.to_thread(
-        accounts.check_password, form.get("password", ""), pw_hash
+    ok = len(password) <= accounts.MAX_PASSWORD_LEN and await asyncio.to_thread(
+        accounts.check_password, password, pw_hash
     )
     if not (user and ok):
-        _record_failure(key)
+        _record_failure(failures, key)
+        log.warning("login failed user=%s ip=%s", username, request.remote)
         return html_response(
             views.login_page("Invalid username or password.", dev=cfg.dev),
             status=401,
         )
-    _failures.pop(key, None)
+    failures.pop(key, None)
+    log.info("login ok user=%s ip=%s", user["username"], request.remote)
     token = accounts.start_session(db, user["id"], days=cfg.session_days)
     resp = web.HTTPFound("/")
     resp.set_cookie(
-        COOKIE,
+        _cookie_name(request),
         token,
         httponly=True,
         secure=cfg.secure_cookies,
@@ -133,9 +214,10 @@ async def login(request):
 
 
 async def logout(request):
-    accounts.end_session(request.app["db"], request.cookies.get(COOKIE))
+    name = _cookie_name(request)
+    accounts.end_session(request.app["db"], request.cookies.get(name))
     resp = web.HTTPFound("/login")
-    resp.del_cookie(COOKIE, path="/")
+    resp.del_cookie(name, path="/")
     raise resp
 
 
@@ -151,15 +233,23 @@ def _render_home_main(request, user: dict) -> str:
     return render(views.home_main(user_notes, error))
 
 
+MAX_STREAMS_PER_USER = 10  # tabs are cheap; a flood of streams is not
+
+
 async def ui_events(request):
     """The push stream (opened by data-init on live pages). Subscribes
     this connection to the user's bus topic and fat-morphs <main> on
     every change until the client disconnects — unsubscribing is the
     stream generator's finally, via the adapter."""
     user = require_user(request)
+    topic = _topic(user)
+    # Cap concurrent streams per user: each one holds a render closure
+    # and a compressor, and every publish fans out to all of them.
+    if request.app["bus"].subscriber_count(topic) >= MAX_STREAMS_PER_USER:
+        raise web.HTTPTooManyRequests(text="Too many open streams")
     stream = datastar.render_stream(
         request.app["bus"],
-        _topic(user),
+        topic,
         lambda: _render_home_main(request, user),
     )
     return datastar.DatastarResponse(

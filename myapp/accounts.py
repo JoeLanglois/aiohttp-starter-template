@@ -11,6 +11,10 @@ Security recipe implemented here:
   leaked database contains neither usable passwords nor live sessions.
 - Sessions expire absolutely (default 30 days) and die server-side at
   logout / password change — real revocation, not just cookie deletion.
+- Usernames are case-insensitive: normalized (strip + lower) at creation
+  and at every lookup, so "Alice" and "alice" are one account, never
+  lookalike twins. Length caps on both fields keep absurd inputs from
+  reaching Argon2 (see MAX_PASSWORD_LEN).
 """
 
 import hashlib
@@ -22,6 +26,8 @@ from pwdlib import PasswordHash
 _ph = PasswordHash.recommended()  # Argon2id with maintained defaults
 
 MIN_PASSWORD_LEN = 12
+MAX_PASSWORD_LEN = 1024  # generous for humans, a hard stop for CPU abuse
+MAX_USERNAME_LEN = 64
 
 # A real Argon2id hash of a random throwaway password. authenticate()
 # verifies against it when the username doesn't exist, so "no such user"
@@ -50,6 +56,10 @@ def hash_password(password: str) -> str:
         raise ValueError(
             f"Password must be at least {MIN_PASSWORD_LEN} characters."
         )
+    if len(password) > MAX_PASSWORD_LEN:
+        raise ValueError(
+            f"Password must be at most {MAX_PASSWORD_LEN} characters."
+        )
     return _ph.hash(password)
 
 
@@ -63,10 +73,21 @@ def check_password(password: str, pw_hash: str) -> bool:
 # -- Users ----------------------------------------------------------------
 
 
+def normalize_username(username: str) -> str:
+    """The one canonical form of a username: stripped and lowercased.
+    Used at creation, at lookup, and anywhere a username becomes a key
+    (e.g. the login rate limiter) — keep them all in agreement."""
+    return username.strip().lower()
+
+
 def create_user(db, username: str, password: str) -> dict:
-    username = username.strip()
+    username = normalize_username(username)
     if not username:
         raise ValueError("Username is required.")
+    if len(username) > MAX_USERNAME_LEN:
+        raise ValueError(
+            f"Username must be at most {MAX_USERNAME_LEN} characters."
+        )
     if user_by_username(db, username) is not None:
         raise ValueError("Username already taken.")
     db["users"].insert(
@@ -80,7 +101,7 @@ def create_user(db, username: str, password: str) -> dict:
 
 
 def user_by_username(db, username: str) -> dict | None:
-    return _one(db, "users", "username = ?", [username.strip()])
+    return _one(db, "users", "username = ?", [normalize_username(username)])
 
 
 def user_by_id(db, user_id: int) -> dict | None:

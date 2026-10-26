@@ -203,8 +203,24 @@ client-supplied Brotli, but the patched floor costs nothing.)
   (`accounts._token_hash`), with an absolute 30-day expiry. Logout and
   password changes delete the server-side row: revocation is real.
   (*`Secure` only when `APP_SECURE_COOKIES=1` — see Production.)
-- POSTs with a foreign `Origin` header are rejected (middleware), as
-  defence-in-depth next to `SameSite=Lax`.
+- State-changing requests (POST/PUT/PATCH/DELETE) with a foreign
+  `Origin` header are rejected (middleware), as defence-in-depth next
+  to `SameSite=Lax`.
+- Usernames are case-insensitive (normalized strip+lower at creation
+  and lookup — no lookalike accounts, and the login rate limiter keys
+  on the canonical form). Usernames cap at 64 chars, passwords at
+  1024; an over-long login password fails fast, without an Argon2 run.
+- Every response carries baseline headers (middleware): a CSP
+  (`default-src 'self'`, `frame-ancestors 'none'`, `form-action
+  'self'`…), `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+  same-origin`. Dev mode relaxes `script-src` with `'unsafe-inline'`
+  for the hot-swap snippet — prod never does.
+- With `APP_SECURE_COOKIES=1` the session cookie is named
+  `__Host-sid`, binding it to this host over HTTPS (no subdomain can
+  plant or shadow it).
+- Login successes, failures and rate-limit hits are logged
+  (`myapp.auth` logger; never passwords). The `/events` push stream is
+  capped at 10 concurrent streams per user.
 - No signup, password-reset, or email flows. The CLI is the admin:
   `create-user`, `reset-password`, `logout-everywhere`.
 
@@ -224,6 +240,15 @@ client-supplied Brotli, but the patched floor costs nothing.)
 - Put it behind a TLS-terminating reverse proxy (e.g. Caddy) and set
   `APP_SECURE_COOKIES=1`. Session cookies over plain HTTP are the one
   thing standing between this template and a stolen session.
+- Let the proxy own the public hostname: the app itself doesn't
+  validate the `Host` header. One vhost in front (Caddy's default)
+  covers it — don't expose the app port directly.
+- Never run `--dev` in production, and don't bind dev mode beyond
+  localhost: its endpoints are unauthenticated by design.
+- Know the rate limiter's shape: in-memory (a restart resets it) and
+  keyed by client IP — behind the proxy that IP is the proxy's, so
+  the bucket is effectively per-username globally. Fine at this
+  scale; see the comment in `web.py` if it ever isn't.
 - Backups = copy the `.db` file (WAL mode: use `sqlite3 app.db .backup
   backup.db` or stop the app first).
 - That's… mostly it. It's one process and one file.
