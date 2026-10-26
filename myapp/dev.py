@@ -14,6 +14,7 @@ Dev-only: watchfiles lives in the dev dependency group and is imported
 lazily here, so production never touches it.
 """
 
+import os
 from pathlib import Path
 
 
@@ -31,6 +32,9 @@ def run_dev() -> None:
             "run `uv sync` or `pip install watchfiles`."
         )
     root = Path(__file__).resolve().parent.parent
+    # The server child inherits our environment: this is what turns on its
+    # dev extras (SSE CSS hot-swap endpoint + watcher, no-store static).
+    os.environ["APP_DEV"] = "1"
     print(f"[dev] watching {root} for .py changes — Ctrl-C to stop")
     run_process(
         root,

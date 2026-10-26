@@ -19,6 +19,11 @@ class Config:
     # if this is on during development — hence the explicit switch.
     secure_cookies: bool = False
     session_days: int = 30
+    # Dev mode: set automatically when launched via `python -m myapp --dev`
+    # (the supervisor exports APP_DEV=1 to the server child). Enables the
+    # /__dev/events SSE endpoint, CSS hot-swap watcher, and no-store
+    # headers on static files. Never on in production.
+    dev: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -28,4 +33,5 @@ class Config:
             port=int(os.environ.get("APP_PORT", "8080")),
             secure_cookies=os.environ.get("APP_SECURE_COOKIES", "0") == "1",
             session_days=int(os.environ.get("APP_SESSION_DAYS", "30")),
+            dev=os.environ.get("APP_DEV", "0") == "1",
         )

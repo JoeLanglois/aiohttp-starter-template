@@ -9,6 +9,7 @@ from aiohttp import web
 
 from .config import Config
 from .db import open_db
+from . import web as web_layer
 from .web import auth_middleware, origin_check, register_routes
 
 
@@ -17,6 +18,10 @@ def make_app(config: Config | None = None) -> web.Application:
     app = web.Application(middlewares=[origin_check, auth_middleware])
     app["config"] = config
     app["db"] = open_db(config.db_path)
+    app["dev_queues"] = set()  # SSE subscribers, used only in dev mode
+    if config.dev:
+        app.on_startup.append(web_layer.start_dev_watcher)
+        app.on_cleanup.append(web_layer.stop_dev_watcher)
 
     async def _close_db(app_: web.Application) -> None:
         app_["db"].conn.close()

@@ -94,6 +94,29 @@ When a context file passes ~400–500 lines, turn it into a package and
 re-export the same public functions from its `__init__.py`. The API
 doesn't change, only the filing.
 
+## Static files
+
+Put files in `myapp/static/`; they're served at `/static/<name>`, and
+the default stylesheet (`app.css`) is already linked from every page.
+Serving is aiohttp's `FileResponse` (sendfile, ranges,
+ETag/Last-Modified), so production caching behaves normally.
+
+## Dev extras: CSS hot-swap, no browser cache
+
+Under `--dev`, the supervisor exports `APP_DEV=1` to the server, which
+turns on three dev-only behaviors:
+
+- **No-store static**: every `/static/` response carries
+  `Cache-Control: no-store`, so the browser never keeps a cached copy —
+  what loads is always what's on disk right now.
+- **CSS hot-swap**: a background task polls `myapp/static/*.css` for
+  changes (every 0.25 s) and pushes an SSE event to open pages via
+  `/__dev/events`. A snippet injected into pages (dev only) swaps the
+  changed stylesheet for a cache-busted URL, so new styles apply
+  instantly — no page reload, no server restart. Python changes still
+  restart via the supervisor, as above.
+- The SSE endpoint and the snippet **don't exist outside dev mode**.
+
 ## Auth, concretely
 
 - Passwords: Argon2id via `pwdlib` (`PasswordHash.recommended()`),
@@ -123,6 +146,7 @@ doesn't change, only the filing.
 | `APP_PORT`           | `8080`      | Bind port                                |
 | `APP_SECURE_COOKIES` | `0`         | `1` = Secure session cookies (HTTPS)     |
 | `APP_SESSION_DAYS`   | `30`        | Absolute session lifetime                |
+| `APP_DEV`            | `0`         | Dev extras; set for you by `--dev`       |
 
 ## Production checklist (the short version)
 
