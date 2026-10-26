@@ -127,11 +127,12 @@ async def security_headers(request, handler):
     except web.HTTPException as exc:
         resp = exc
     if not resp.prepared:  # a started stream's headers are already sent
+        # One policy for dev and prod. Note what does NOT work here:
+        # adding 'unsafe-inline' for the dev hot-swap snippet — with a
+        # nonce in the source list, browsers ignore 'unsafe-inline'
+        # entirely and the snippet is blocked anyway. The snippet
+        # carries the nonce itself (views._dev_snippet).
         script_src = f"'self' 'nonce-{nonce}'"
-        if request.app["config"].dev:
-            # The dev CSS hot-swap snippet is an inline <script>;
-            # dev only — prod never allows inline scripts.
-            script_src += " 'unsafe-inline'"
         resp.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "

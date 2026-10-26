@@ -220,9 +220,10 @@ client-supplied Brotli, but the patched floor costs nothing.)
   gets a fresh nonce in `script-src` and in `<html data-nonce>`,
   Datastar applies it when compiling, and `'unsafe-eval'` is never
   allowed. Keep Datastar expressions static and pass user values
-  through signals, never interpolated into expressions. Dev mode
-  additionally relaxes `script-src` with `'unsafe-inline'` for the
-  hot-swap snippet — prod never does.
+  through signals, never interpolated into expressions. The policy is
+  identical in dev and prod — the dev hot-swap snippet carries the
+  nonce on its `<script>` tag (adding `'unsafe-inline'` wouldn't
+  work: browsers ignore it when a nonce is present).
 - With `APP_SECURE_COOKIES=1` the session cookie is named
   `__Host-sid`, binding it to this host over HTTPS (no subdomain can
   plant or shadow it).

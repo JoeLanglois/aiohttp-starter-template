@@ -65,14 +65,18 @@ async def test_headers_on_pages_and_redirects(aiohttp_client, cfg):
     assert "Content-Security-Policy" in resp.headers
 
 
-async def test_csp_dev_allows_inline_for_hotswap(aiohttp_client, tmp_path):
+async def test_csp_dev_nonces_the_hotswap_snippet(aiohttp_client, tmp_path):
     cfg = Config(db_path=tmp_path / "t.db", secure_cookies=False, dev=True)
     client = await aiohttp_client(make_app(cfg))
     resp = await client.get("/login")
     csp = resp.headers["Content-Security-Policy"]
-    assert "'unsafe-inline'" in csp  # the inline hot-swap snippet
-    assert "unsafe-eval" not in csp  # nonce mode in dev too
-    assert f'data-nonce="{_nonce_of(csp)}"' in await resp.text()
+    # Same policy as prod: with a nonce in script-src, browsers ignore
+    # 'unsafe-inline', so the dev snippet must carry the nonce itself.
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+    nonce = _nonce_of(csp)
+    body = await resp.text()
+    assert f'data-nonce="{nonce}"' in body
+    assert f'<script nonce="{nonce}">' in body  # the hot-swap snippet
 
 
 # -- Origin check: all unsafe methods ---------------------------------------

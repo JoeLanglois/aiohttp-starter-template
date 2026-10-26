@@ -12,9 +12,16 @@ from string.templatelib import Template
 # when a stylesheet changes, points the matching <link> at a cache-busted
 # URL so the browser fetches the new file without a page reload. Injected
 # by _page only when dev=True — it never ships to production pages.
-# (Braces are doubled because this is a t-string.)
-_DEV_SNIPPET = t"""
-<script>
+# The <script> carries the response's CSP nonce: a nonce in script-src
+# makes browsers IGNORE 'unsafe-inline' entirely, so allowing the
+# snippet via 'unsafe-inline' (our first attempt) silently failed —
+# noncing it is the only way, and it keeps the policy identical in
+# dev and prod. (JS braces are doubled because this is a t-string.)
+
+
+def _dev_snippet(nonce: str) -> Template:
+    return t"""
+<script nonce="{nonce}">
 const _dev_es = new EventSource("/__dev/events");
 _dev_es.addEventListener("css", (e) => {{
   document.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {{
@@ -43,7 +50,7 @@ def _page(
             </form></nav>"""
     else:
         nav = t"""<nav><a href="/login">Log in</a></nav>"""
-    hot_swap = _DEV_SNIPPET if dev else t""
+    hot_swap = _dev_snippet(nonce) if dev else t""
     # `live` pages open the push stream on load (Hyperlith-style): the
     # server re-renders <main id="app"> and fat-morphs it on every state
     # change. data-init lives on its own element, outside the morphed
