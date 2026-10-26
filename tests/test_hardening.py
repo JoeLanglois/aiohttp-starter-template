@@ -3,6 +3,7 @@ methods, username normalization + length caps, __Host- cookie, SSE cap,
 rate-limiter hygiene, auth logging."""
 
 import logging
+import re
 import time
 
 import pytest
@@ -31,15 +32,31 @@ async def _login(client, username="alice", password=PW):
 # -- Security headers -------------------------------------------------------
 
 
+def _nonce_of(csp: str) -> str:
+    match = re.search(r"'nonce-([^']+)'", csp)
+    assert match, f"no nonce in CSP: {csp}"
+    return match.group(1)
+
+
 async def test_headers_on_pages_and_redirects(aiohttp_client, cfg):
     client, _ = await _client_with_user(aiohttp_client, cfg)
 
     resp = await client.get("/login")
-    assert "frame-ancestors 'none'" in resp.headers["Content-Security-Policy"]
-    assert "script-src 'self'" in resp.headers["Content-Security-Policy"]
-    assert "unsafe-inline" not in resp.headers["Content-Security-Policy"]
+    csp = resp.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'none'" in csp
+    # Datastar runs in its documented CSP nonce mode: script-src
+    # carries a per-response nonce, <html> carries the same nonce in
+    # data-nonce, and 'unsafe-eval'/'unsafe-inline' never appear.
+    assert "unsafe-eval" not in csp and "unsafe-inline" not in csp
+    assert f'data-nonce="{_nonce_of(csp)}"' in await resp.text()
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
     assert resp.headers["Referrer-Policy"] == "same-origin"
+
+    # The authenticated page too (it's the live Datastar one).
+    await _login(client)
+    resp = await client.get("/")
+    csp = resp.headers["Content-Security-Policy"]
+    assert f'data-nonce="{_nonce_of(csp)}"' in await resp.text()
 
     # Redirects are raised as exceptions in handlers; headers must
     # survive that path too.
@@ -52,7 +69,10 @@ async def test_csp_dev_allows_inline_for_hotswap(aiohttp_client, tmp_path):
     cfg = Config(db_path=tmp_path / "t.db", secure_cookies=False, dev=True)
     client = await aiohttp_client(make_app(cfg))
     resp = await client.get("/login")
-    assert "'unsafe-inline'" in resp.headers["Content-Security-Policy"]
+    csp = resp.headers["Content-Security-Policy"]
+    assert "'unsafe-inline'" in csp  # the inline hot-swap snippet
+    assert "unsafe-eval" not in csp  # nonce mode in dev too
+    assert f'data-nonce="{_nonce_of(csp)}"' in await resp.text()
 
 
 # -- Origin check: all unsafe methods ---------------------------------------

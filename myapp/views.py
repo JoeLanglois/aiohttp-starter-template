@@ -34,6 +34,7 @@ def _page(
     content: Template,
     dev: bool = False,
     live: bool = False,
+    nonce: str = "",
 ) -> Template:
     if user is not None:
         nav = t"""<nav>Signed in as {user["username"]}
@@ -51,8 +52,13 @@ def _page(
     init = (
         t"""<div data-init="@get('/events')" hidden></div>""" if live else t""
     )
+    # data-nonce carries this response's CSP nonce (set by the
+    # security_headers middleware): Datastar's CSP mode reads it from
+    # <html>, removes the attribute, and applies the nonce when
+    # compiling expressions — which is what lets the CSP omit
+    # 'unsafe-eval' entirely. See web.security_headers.
     return t"""<!doctype html>
-<html lang="en">
+<html lang="en" data-nonce="{nonce}">
 <head><meta charset="utf-8"><title>{title}</title>
 <link rel="stylesheet" href="/static/app.css">
 <script type="module" src="/static/datastar.js"></script></head>
@@ -60,7 +66,9 @@ def _page(
 </html>"""
 
 
-def login_page(error: str | None = None, dev: bool = False) -> Template:
+def login_page(
+    error: str | None = None, dev: bool = False, nonce: str = ""
+) -> Template:
     err = t"""<p role="alert">{error}</p>""" if error else t""
     content = t"""<h1>Log in</h1>{err}
 <form method="post" action="/login">
@@ -73,7 +81,7 @@ def login_page(error: str | None = None, dev: bool = False) -> Template:
     </label>
     <button type="submit">Log in</button>
 </form>"""
-    return _page("Log in", None, content, dev=dev)
+    return _page("Log in", None, content, dev=dev, nonce=nonce)
 
 
 def _note_item(note: dict) -> Template:
@@ -117,7 +125,14 @@ def home_main(user_notes: list[dict], error: str | None = None) -> Template:
     return t"""<main id="app">{home_content(user_notes, error)}</main>"""
 
 
-def home_page(user: dict, user_notes: list[dict], dev: bool = False) -> Template:
+def home_page(
+    user: dict, user_notes: list[dict], dev: bool = False, nonce: str = ""
+) -> Template:
     return _page(
-        "Your notes", user, home_content(user_notes), dev=dev, live=True
+        "Your notes",
+        user,
+        home_content(user_notes),
+        dev=dev,
+        live=True,
+        nonce=nonce,
     )

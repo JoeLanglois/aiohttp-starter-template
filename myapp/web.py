@@ -7,6 +7,7 @@ fourth step, that step probably belongs in a context.
 
 import asyncio
 import logging
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -105,16 +106,32 @@ async def auth_middleware(request, handler):
 async def security_headers(request, handler):
     """Baseline hardening headers on every response — including
     redirects and errors, which our handlers raise as HTTPExceptions,
-    hence the try/except: an exception here IS the response."""
+    hence the try/except: an exception here IS the response.
+
+    The CSP runs Datastar in its documented *nonce mode* (Datastar
+    Security Reference, data-star.dev/reference/security): Datastar
+    compiles its attribute expressions with the Function constructor,
+    which CSP counts as eval — so its default mode needs
+    script-src 'unsafe-eval'. Instead, each response gets a fresh
+    random nonce: it goes in script-src here and in a data-nonce
+    attribute on <html> (views._page), Datastar reads it there and
+    applies it when compiling expressions, and 'unsafe-eval' is
+    never allowed. The docs' standing rule still applies and our
+    views follow it: expressions are static developer-written
+    constants; user values travel via signals, never interpolated
+    into an expression."""
+    nonce = secrets.token_urlsafe(16)
+    request["csp_nonce"] = nonce
     try:
         resp = await handler(request)
     except web.HTTPException as exc:
         resp = exc
     if not resp.prepared:  # a started stream's headers are already sent
-        script_src = "'self' 'unsafe-inline'" if request.app["config"].dev else "'self'"
-        # script-src: the Datastar client is a same-origin file, so
-        # 'self' suffices in prod. Dev needs 'unsafe-inline' for the
-        # inline CSS hot-swap snippet — dev only, never in prod.
+        script_src = f"'self' 'nonce-{nonce}'"
+        if request.app["config"].dev:
+            # The dev CSS hot-swap snippet is an inline <script>;
+            # dev only — prod never allows inline scripts.
+            script_src += " 'unsafe-inline'"
         resp.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "
@@ -151,14 +168,23 @@ async def home(request):
     user = require_user(request)
     user_notes = notes.list_notes(request.app["db"], user["id"])
     return html_response(
-        views.home_page(user, user_notes, dev=request.app["config"].dev)
+        views.home_page(
+            user,
+            user_notes,
+            dev=request.app["config"].dev,
+            nonce=request["csp_nonce"],
+        )
     )
 
 
 async def login_form(request):
     if request.get("user") is not None:
         raise web.HTTPFound("/")
-    return html_response(views.login_page(dev=request.app["config"].dev))
+    return html_response(
+        views.login_page(
+            dev=request.app["config"].dev, nonce=request["csp_nonce"]
+        )
+    )
 
 
 async def login(request):
@@ -176,7 +202,9 @@ async def login(request):
         )
         return html_response(
             views.login_page(
-                "Too many attempts. Try again later.", dev=cfg.dev
+                "Too many attempts. Try again later.",
+                dev=cfg.dev,
+                nonce=request["csp_nonce"],
             ),
             status=429,
         )
@@ -194,7 +222,11 @@ async def login(request):
         _record_failure(failures, key)
         log.warning("login failed user=%s ip=%s", username, request.remote)
         return html_response(
-            views.login_page("Invalid username or password.", dev=cfg.dev),
+            views.login_page(
+                "Invalid username or password.",
+                dev=cfg.dev,
+                nonce=request["csp_nonce"],
+            ),
             status=401,
         )
     failures.pop(key, None)

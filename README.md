@@ -213,8 +213,16 @@ client-supplied Brotli, but the patched floor costs nothing.)
 - Every response carries baseline headers (middleware): a CSP
   (`default-src 'self'`, `frame-ancestors 'none'`, `form-action
   'self'`…), `X-Content-Type-Options: nosniff`, `Referrer-Policy:
-  same-origin`. Dev mode relaxes `script-src` with `'unsafe-inline'`
-  for the hot-swap snippet — prod never does.
+  same-origin`. Datastar runs in its documented *CSP nonce mode*
+  (see Datastar's Security Reference): Datastar compiles attribute
+  expressions with the Function constructor, so its default mode
+  would force `script-src 'unsafe-eval'`; instead, each response
+  gets a fresh nonce in `script-src` and in `<html data-nonce>`,
+  Datastar applies it when compiling, and `'unsafe-eval'` is never
+  allowed. Keep Datastar expressions static and pass user values
+  through signals, never interpolated into expressions. Dev mode
+  additionally relaxes `script-src` with `'unsafe-inline'` for the
+  hot-swap snippet — prod never does.
 - With `APP_SECURE_COOKIES=1` the session cookie is named
   `__Host-sid`, binding it to this host over HTTPS (no subdomain can
   plant or shadow it).
