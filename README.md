@@ -176,6 +176,18 @@ they're pushed, Hyperlith-style:
 Single process, state re-read from SQLite on every render — the whole
 thing is `bus.py` (~50 lines) plus one generator in the adapter.
 
+Both SSE streams (this one and the dev CSS stream) are Brotli-compressed
+when the client offers `Accept-Encoding: br` — per-event, with a flush
+after each event, so pushes are never delayed by the compressor. Because
+the compressor keeps its dictionary across the connection, repeated fat
+renders shrink dramatically (measured: a 1 388 B update went out as
+98 B). The `brotli` dependency is floored at **1.2.1**: every earlier
+release carries CVE-2026-111497 ("Node2Shell", CVSS 9.2), an
+out-of-bounds write in the Brotli C decoder — and a test in
+`tests/test_compression.py` fails if the installed version ever drops
+below the fix. (This app only *encodes* with it and never decodes
+client-supplied Brotli, but the patched floor costs nothing.)
+
 ## Auth, concretely
 
 - Passwords: Argon2id via `pwdlib` (`PasswordHash.recommended()`),

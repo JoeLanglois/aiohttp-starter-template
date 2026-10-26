@@ -5,6 +5,9 @@ description = "Starter template: aiohttp + SQLite (sqlite-utils) + tdom template
 requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.12",
+    # Floor is a security pin: <1.2.1 carries CVE-2026-111497
+    # ("Node2Shell"), an out-of-bounds write in the Brotli C decoder.
+    "brotli>=1.2.1",
     "datastar-py>=1.0.3",
     "pwdlib[argon2]>=0.2",
     "sqlite-utils>=4.0",

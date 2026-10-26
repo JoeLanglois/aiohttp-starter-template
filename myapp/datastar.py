@@ -45,6 +45,7 @@ __all__ = [
     "SSE_HEADERS",
     "DatastarResponse",
     "ServerSentEventGenerator",
+    "accepts_brotli",
     "datastar_response",
     "is_datastar_request",
     "read_signals",
@@ -56,6 +57,15 @@ def is_datastar_request(request: web.Request) -> bool:
     return "Datastar-Request" in request.headers
 
 
+def accepts_brotli(request: web.Request) -> bool:
+    """True when the client offered `Accept-Encoding: br` (q > 0)."""
+    for part in request.headers.get("Accept-Encoding", "").split(","):
+        token, _, params = part.strip().partition(";")
+        if token.strip().lower() == "br" and "q=0" not in params.replace(" ", ""):
+            return True
+    return False
+
+
 async def read_signals(request: web.Request) -> dict[str, Any] | None:
     return _read_signals(
         request.method, request.headers, request.query, await request.read()
@@ -63,7 +73,15 @@ async def read_signals(request: web.Request) -> dict[str, Any] | None:
 
 
 class DatastarResponse(web.StreamResponse):
-    """Respond with 0..N `DatastarEvent`s (see module docstring)."""
+    """Respond with 0..N `DatastarEvent`s (see module docstring).
+
+    With `compress=True` the body is Brotli-encoded (the caller checks
+    `accepts_brotli(request)` first). Compression is per-event with a
+    flush after each one, so streamed events stay immediately
+    deliverable — a buffered compressor would batch the very updates
+    SSE exists to push. Uses the `brotli` package; keep it >= 1.2.1
+    (older releases carry CVE-2026-111497 in the decoder).
+    """
 
     def __init__(
         self,
@@ -74,15 +92,17 @@ class DatastarResponse(web.StreamResponse):
         *,
         status: int | None = None,
         headers: dict[str, str] | None = None,
+        compress: bool = False,
     ) -> None:
+        self._compress = compress and bool(content)
         if not content:
             super().__init__(status=status or 204, headers=headers)
             self._content = None
         else:
-            super().__init__(
-                status=status or 200,
-                headers={**SSE_HEADERS, **(headers or {})},
-            )
+            merged = {**SSE_HEADERS, **(headers or {})}
+            if self._compress:
+                merged["Content-Encoding"] = "br"
+            super().__init__(status=status or 200, headers=merged)
             self._content = content
 
     async def prepare(self, request: web.Request) -> DatastarResponse:
@@ -90,15 +110,36 @@ class DatastarResponse(web.StreamResponse):
             await super().prepare(request)
         content, self._content = self._content, None
         if content is not None:
+            encoder = None
+            if self._compress:
+                try:
+                    import brotli
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "DatastarResponse(compress=True) needs the "
+                        "brotli package (>=1.2.1)"
+                    ) from exc
+                encoder = brotli.Compressor(quality=4)
+
+            async def send(data: bytes) -> None:
+                if encoder is not None:
+                    data = encoder.process(data) + encoder.flush()
+                if data:
+                    await self.write(data)
+
             try:
                 if isinstance(content, (DatastarEvent, str)):
-                    await self.write(str(content).encode())
+                    await send(str(content).encode())
                 elif isasyncgen(content):
                     async for event in content:
-                        await self.write(str(event).encode())
+                        await send(str(event).encode())
                 else:
                     for event in content:
-                        await self.write(str(event).encode())
+                        await send(str(event).encode())
+                if encoder is not None:
+                    tail = encoder.finish()
+                    if tail:
+                        await self.write(tail)
             finally:
                 if isasyncgen(content):
                     # Guarantee the generator's own cleanup (e.g.

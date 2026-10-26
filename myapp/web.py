@@ -162,7 +162,9 @@ async def ui_events(request):
         _topic(user),
         lambda: _render_home_main(request, user),
     )
-    return datastar.DatastarResponse(stream)
+    return datastar.DatastarResponse(
+        stream, compress=datastar.accepts_brotli(request)
+    )
 
 
 async def add_note(request):
@@ -248,21 +250,36 @@ def _css_only(change, path: str) -> bool:
 
 
 async def dev_events(request):
-    resp = web.StreamResponse(
-        headers={
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
-    )
+    headers = {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    # Same per-event Brotli treatment as the Datastar stream (see
+    # datastar.DatastarResponse): flush after every event so pushes
+    # are never held back by the compressor.
+    encoder = None
+    if datastar.accepts_brotli(request):
+        import brotli
+
+        encoder = brotli.Compressor(quality=4)
+        headers["Content-Encoding"] = "br"
+    resp = web.StreamResponse(headers=headers)
     await resp.prepare(request)
+
+    async def send(data: bytes) -> None:
+        if encoder is not None:
+            data = encoder.process(data) + encoder.flush()
+        if data:
+            await resp.write(data)
+
     queue: asyncio.Queue = asyncio.Queue()
     request.app["dev_queues"].add(queue)
     try:
-        await resp.write(b": connected\n\n")
+        await send(b": connected\n\n")
         while True:
             name = await queue.get()
-            await resp.write(f"event: css\ndata: {name}\n\n".encode())
+            await send(f"event: css\ndata: {name}\n\n".encode())
     except (asyncio.CancelledError, ConnectionResetError):
         pass
     finally:
