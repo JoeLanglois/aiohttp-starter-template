@@ -182,13 +182,16 @@ async def static_file(request):
 
 # -- Dev-only CSS hot swap ----------------------------------------------------
 #
-# Registered and started only when config.dev is on. A background task
-# polls the static dir's CSS mtimes (0.25 s — no watcher dependency in the
-# server, and Python-file changes are already handled by the supervisor
-# restarting us). Connected pages get an SSE `css` event naming the file,
-# and the snippet in views.py swaps in a cache-busted <link>.
+# Registered and started only when config.dev is on. The server reuses
+# watchfiles (already the supervisor's dependency) with a low debounce,
+# so a save is pushed to connected pages over SSE within a few tens of
+# milliseconds — no polling, no restart (Python changes are the
+# supervisor's job). Pages get a `css` event naming the file, and the
+# snippet in views.py swaps in a cache-busted <link>.
 
-_CSS_POLL_SECONDS = 0.25
+
+def _css_only(change, path: str) -> bool:
+    return path.endswith(".css")
 
 
 async def dev_events(request):
@@ -215,21 +218,22 @@ async def dev_events(request):
 
 
 async def _watch_static_css(app: web.Application) -> None:
-    def snapshot() -> dict[Path, float]:
-        return {p: p.stat().st_mtime for p in STATIC_DIR.glob("*.css")}
+    from watchfiles import awatch
 
-    seen = snapshot()
-    while True:
-        await asyncio.sleep(_CSS_POLL_SECONDS)
-        current = snapshot()
-        changed = [p.name for p, m in current.items() if seen.get(p) != m]
-        seen = current
-        for name in changed:
+    async for changes in awatch(
+        STATIC_DIR, watch_filter=_css_only, debounce=50, step=25
+    ):
+        for name in sorted({Path(p).name for _, p in changes}):
             for queue in list(app["dev_queues"]):
                 queue.put_nowait(name)
 
 
 async def start_dev_watcher(app: web.Application) -> None:
+    try:
+        import watchfiles  # noqa: F401 — dev dependency; absent in prod installs
+    except ImportError:
+        print("[dev] watchfiles not installed — CSS hot-swap disabled")
+        return
     app["dev_watcher"] = asyncio.create_task(_watch_static_css(app))
 
 

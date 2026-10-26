@@ -109,12 +109,14 @@ turns on three dev-only behaviors:
 - **No-store static**: every `/static/` response carries
   `Cache-Control: no-store`, so the browser never keeps a cached copy —
   what loads is always what's on disk right now.
-- **CSS hot-swap**: a background task polls `myapp/static/*.css` for
-  changes (every 0.25 s) and pushes an SSE event to open pages via
-  `/__dev/events`. A snippet injected into pages (dev only) swaps the
-  changed stylesheet for a cache-busted URL, so new styles apply
-  instantly — no page reload, no server restart. Python changes still
-  restart via the supervisor, as above.
+- **CSS hot-swap**: the server watches `myapp/static/` with
+  [watchfiles](https://watchfiles.helpmanual.io/) (the supervisor's own
+  dependency, reused) at a low 50 ms debounce and pushes an SSE event to
+  open pages via `/__dev/events` — measured save → event in ~30 ms. A
+  snippet injected into pages (dev only) swaps the changed stylesheet
+  for a cache-busted URL, so new styles apply instantly — no page
+  reload, no server restart. Python changes still restart via the
+  supervisor, as above.
 - The SSE endpoint and the snippet **don't exist outside dev mode**.
 
 ## Auth, concretely

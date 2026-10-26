@@ -61,7 +61,7 @@ async def test_css_change_pushes_sse_event(aiohttp_client, tmp_path):
         resp = await client.get("/__dev/events")
         assert resp.status == 200
         assert resp.headers["Content-Type"].startswith("text/event-stream")
-        await asyncio.sleep(0.4)  # let the watcher's first snapshot land
+        await asyncio.sleep(0.3)  # let the fs watcher arm itself
         css.write_text(original + "\n/* hot-swap test change */\n")
 
         async def read_until_event() -> bytes:
