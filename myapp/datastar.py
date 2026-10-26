@@ -160,7 +160,7 @@ def render_stream(
     render: Callable[[], str],
     *,
     heartbeat_seconds: float | None = 30.0,
-) -> AsyncIterable[DatastarEvent | str]:
+) -> AsyncIterable[DatastarEvent]:
     """An async generator of fat-update events for DatastarResponse —
     the Hyperlith model:
 
@@ -198,7 +198,7 @@ def render_stream(
                 try:
                     await asyncio.wait_for(queue.get(), heartbeat_seconds)
                 except TimeoutError:
-                    yield ": ping\n\n"
+                    yield DatastarEvent(": ping\n\n")
         finally:
             bus.unsubscribe(topic, queue)
 
