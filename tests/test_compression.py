@@ -5,7 +5,7 @@ import asyncio
 import brotli
 from aiohttp.test_utils import make_mocked_request
 
-from myapp import accounts, datastar, notes
+from myapp import accounts, datastar
 from myapp.main import make_app
 
 PW = "correct horse battery staple"

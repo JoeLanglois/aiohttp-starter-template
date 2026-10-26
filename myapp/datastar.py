@@ -32,9 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import AsyncIterable, Callable, Iterable
+from collections.abc import AsyncGenerator, AsyncIterable, Callable, Iterable
 from functools import wraps
-from inspect import isasyncgen
 from typing import Any
 
 from aiohttp import web
@@ -130,7 +129,7 @@ class DatastarResponse(web.StreamResponse):
             try:
                 if isinstance(content, (DatastarEvent, str)):
                     await send(str(content).encode())
-                elif isasyncgen(content):
+                elif isinstance(content, AsyncIterable):
                     async for event in content:
                         await send(str(event).encode())
                 else:
@@ -141,7 +140,7 @@ class DatastarResponse(web.StreamResponse):
                     if tail:
                         await self.write(tail)
             finally:
-                if isasyncgen(content):
+                if isinstance(content, AsyncGenerator):
                     # Guarantee the generator's own cleanup (e.g.
                     # render_stream unsubscribing from the bus) runs on
                     # disconnect/cancellation too, not just on a clean
